@@ -129,14 +129,77 @@ def fetch_eu_tariff(country_code, hs6):
         "source": url,
     }
 
+TEDB_WSDL = "https://ec.europa.eu/taxation_customs/tedb/ws/VatRetrievalService"
+CHINA_CUSTOMS_TAX_LOOKUP = "https://online.customs.gov.cn/ociswebserver/pages/jckspsl/index.html"
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_china_tariff(hs6):
-    # China official source is exposed for verification. No guessed tariff is used.
+def fetch_eu_vat(country_code, hs6):
+    """Use the European Commission TEDB SOAP service for VAT rates by CN code."""
+    cn_code = hs6 + "00"
+    envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+ xmlns:urn="urn:ec.europa.eu:taxud:tedb:services:v1:IVatRetrievalService"
+ xmlns:urn1="urn:ec.europa.eu:taxud:tedb:services:v1:IVatRetrievalService:types">
+ <soapenv:Header/>
+ <soapenv:Body>
+  <urn:retrieveVatRatesReqMsg>
+   <urn1:memberStates><urn1:isoCode>{country_code}</urn1:isoCode></urn1:memberStates>
+   <urn1:from>{TODAY.isoformat()}</urn1:from>
+   <urn1:to>{TODAY.isoformat()}</urn1:to>
+   <urn1:cnCodes><urn1:value>{cn_code}</urn1:value></urn1:cnCodes>
+   <urn1:categories><urn1:identifier>FOODSTUFFS</urn1:identifier></urn1:categories>
+  </urn:retrieveVatRatesReqMsg>
+ </urn:Body>
+</soapenv:Envelope>"""
+    try:
+        response = requests.post(
+            TEDB_WSDL,
+            data=envelope.encode("utf-8"),
+            headers={
+                "Content-Type": "text/xml; charset=utf-8",
+                "SOAPAction": "urn:ec.europa.eu:taxud:tedb:services:v1/VatRetrievalService/RetrieveVatRates",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        xml = response.text
+        standard = re.search(r"<(?:[^:>]+:)?type>STANDARD</(?:[^:>]+:)?type>.*?<rate>.*?<value>([0-9.]+)</", xml, re.S)
+        reduced = re.findall(r"<(?:[^:>]+:)?type>REDUCED</(?:[^:>]+:)?type>.*?<rate>.*?<value>([0-9.]+)</", xml, re.S)
+        rates = [float(x) for x in reduced]
+        if standard:
+            rates.append(float(standard.group(1)))
+        if rates:
+            return {
+                "status": "VERIFIED",
+                "rate": min(rates),
+                "message": f"Retrieved from European Commission TEDB for CN {cn_code}; FOODSTUFFS category included.",
+                "source": TEDB_WSDL,
+            }
+    except Exception as exc:
+        return {"status": "SOURCE ERROR", "rate": None, "message": str(exc), "source": TEDB_WSDL}
     return {
         "status": "MANUAL REVIEW",
         "rate": None,
-        "message": "Automatic legal-rate extraction is not enabled for the official China source yet.",
-        "source": SOURCES["china_mof"],
+        "message": "TEDB responded, but no unambiguous VAT rate was returned for this CN/category/date.",
+        "source": TEDB_WSDL,
+    }
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_china_tariff(hs6):
+    return {
+        "status": "MANUAL REVIEW",
+        "rate": None,
+        "message": "China Customs publishes the tariff/tax lookup, but the public page requires an interactive query. No tariff is guessed.",
+        "source": CHINA_CUSTOMS_TAX_LOOKUP,
+    }
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_china_vat(hs6):
+    return {
+        "status": "MANUAL REVIEW",
+        "rate": None,
+        "message": "China Customs must confirm the exact 10-digit line and applicable import VAT (9%/13% or another special treatment).",
+        "source": CHINA_CUSTOMS_TAX_LOOKUP,
     }
 
 def get_live_tariff(destination, hs6, eu_country=None):
@@ -145,6 +208,18 @@ def get_live_tariff(destination, hs6, eu_country=None):
     if destination == "European Union":
         return fetch_eu_tariff(EU_COUNTRIES[eu_country], hs6)
     return fetch_china_tariff(hs6)
+
+def get_live_tax(destination, hs6, eu_country=None):
+    if destination == "European Union":
+        return fetch_eu_vat(EU_COUNTRIES[eu_country], hs6)
+    if destination == "United States":
+        return {
+            "status": "VERIFIED",
+            "rate": 0.0,
+            "message": "No US federal VAT. State/local sales taxes are separate from federal import duty and are not included.",
+            "source": SOURCES["us_hts"],
+        }
+    return fetch_china_vat(hs6)
 
 st.title("🍑 Armenia → Export Calculator")
 st.caption(f"Dried fruit • live official-source tariff lookup • checkpoint: {TODAY.isoformat()}")
@@ -192,14 +267,17 @@ st.caption(f"Source: [{tariff['source']}]({tariff['source']})")
 duty = customs_value * duty_rate / 100
 
 st.subheader("7. Import tax / VAT")
-if destination == "European Union":
-    st.caption("EU import VAT is destination-country and product dependent. It is not assumed automatically.")
-elif destination == "United States":
-    st.caption("The USA has no federal VAT. State/local sales tax is separate.")
-else:
-    st.caption("China import VAT must be verified for the exact tariff line and tax treatment.")
+with st.spinner("Checking official tax source..."):
+    tax_info = get_live_tax(destination, hs6, eu_country)
 
-tax_rate = st.number_input("Verified import tax / VAT (%)", min_value=0.0, value=0.0, step=0.10)
+if tax_info["status"] == "VERIFIED":
+    tax_rate = tax_info["rate"]
+    st.success(f"Official import tax / VAT found: **{pct(tax_rate)}**")
+else:
+    tax_rate = st.number_input("Import tax / VAT — manual fallback (%)", min_value=0.0, value=0.0, step=0.10)
+    st.warning(f"{tax_info['status']}: {tax_info['message']}")
+
+st.caption(f"Tax source: [{tax_info['source']}]({tax_info['source']})")
 tax_base = customs_value + duty
 import_tax = tax_base * tax_rate / 100
 
@@ -242,7 +320,10 @@ with st.expander("Official sources & audit"):
     st.write(f"Tariff status: **{tariff['status']}**")
     st.write(f"Tariff source: {tariff['source']}")
     st.write(f"Tariff message: {tariff['message']}")
-    st.info("No tariff is silently assumed to be 0%. If an official source cannot be safely queried or mapped, the app switches to MANUAL REVIEW.")
+    st.write(f"Tax status: **{tax_info['status']}**")
+    st.write(f"Tax source: {tax_info['source']}")
+    st.write(f"Tax message: {tax_info['message']}")
+    st.info("Legal rates are never silently assumed to be 0%. If an official source cannot safely map the exact product/date, the calculator switches to MANUAL REVIEW.")
 
 with st.expander("Calculation breakdown"):
     st.write(f"Goods value: {money(goods_value)}")
