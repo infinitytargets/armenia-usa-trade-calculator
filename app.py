@@ -9,14 +9,21 @@ import streamlit as st
 TODAY = date(2026, 9, 21)
 REQUEST_TIMEOUT = 15
 
-st.set_page_config(page_title="Armenia Dried Fruit Export Calculator", page_icon="🍑", layout="centered")
+st.set_page_config(page_title="Armenia Export Calculator", page_icon="🍑", layout="centered")
+
+st.markdown("""
+<style>
+.block-container {max-width: 820px; padding-top: 2rem; padding-bottom: 3rem;}
+[data-testid="stMetricValue"] {font-size: 1.65rem;}
+div[data-testid="stExpander"] {border-radius: 10px;}
+</style>
+""", unsafe_allow_html=True)
 
 SOURCES = {
     "arm_src": "https://exim.src.am/en",
     "eu_a2m": "https://trade.ec.europa.eu/access-to-markets/en/my-trade-assistant",
     "us_hts": "https://hts.usitc.gov/",
     "us_api": "https://hts.usitc.gov/reststop/search",
-    "china_mof": "https://www.mof.gov.cn/jrttts/202404/t20240429_3933789.htm",
 }
 
 PRODUCTS = {
@@ -235,22 +242,22 @@ def get_live_tax(destination, hs6, eu_country=None):
     return fetch_china_vat(hs6)
 
 st.title("🍑 Armenia → Export Calculator")
-st.caption(f"Dried fruit • live official-source tariff lookup • checkpoint: {TODAY.isoformat()}")
+st.caption("Dried fruit • EU & USA • official-source rates when available")
 
-st.subheader("1. Destination")
-destination = st.selectbox("Market", ["European Union", "United States", "China"])
+st.subheader("Destination")
+destination = st.selectbox("Market", ["European Union", "United States"])
 
 if destination == "European Union":
     eu_country = st.selectbox("EU destination country", list(EU_COUNTRIES))
 else:
     eu_country = None
 
-st.subheader("2. Product")
+st.subheader("Product")
 product_name = st.selectbox("Product", list(PRODUCTS))
 hs6, hs_note = PRODUCTS[product_name]
 st.caption(f"HS-6 candidate: **{hs6}** — {hs_note}")
 
-st.subheader("3. Shipment")
+st.subheader("Shipment")
 quantity_kg = st.number_input("Quantity (kg)", min_value=0.01, value=1000.0, step=100.0)
 price_per_kg = st.number_input("Goods price (USD/kg)", min_value=0.0, value=3.20, step=0.10)
 goods_value = quantity_kg * price_per_kg
@@ -261,12 +268,12 @@ with st.expander("Shipment & logistics — optional details"):
     packaging = st.number_input("Packaging / export handling (USD)", min_value=0.0, value=0.0, step=25.0)
     other_logistics = st.number_input("Other logistics (USD)", min_value=0.0, value=0.0, step=25.0)
 
-st.subheader("4. Customs value")
+st.subheader("Customs value")
 customs_value = goods_value + freight + insurance + packaging + other_logistics
 st.metric("Planning customs value", money(customs_value))
 st.caption("Planning value. The calculator applies destination-specific customs valuation rules where verified.")
 
-st.subheader("6. Official tariff lookup")
+st.subheader("Import duty")
 with st.spinner("Checking official tariff source..."):
     tariff = get_live_tariff(destination, hs6, eu_country)
 
@@ -280,7 +287,7 @@ else:
 st.caption(f"Source: [{tariff['source']}]({tariff['source']})")
 duty = customs_value * duty_rate / 100
 
-st.subheader("7. Import tax / VAT")
+st.subheader("Import tax / VAT")
 with st.spinner("Checking official tax source..."):
     tax_info = get_live_tax(destination, hs6, eu_country)
 
@@ -295,7 +302,7 @@ st.caption(f"Tax source: [{tax_info['source']}]({tax_info['source']})")
 tax_base = customs_value + duty
 import_tax = tax_base * tax_rate / 100
 
-st.subheader("8. Import costs")
+st.subheader("Import costs")
 with st.expander("Broker, inspection & other import costs — optional"):
     broker = st.number_input("Customs broker / clearance (USD)", min_value=0.0, value=100.0, step=25.0)
     inspection = st.number_input("Inspection / certification / handling (USD)", min_value=0.0, value=0.0, step=25.0)
@@ -306,20 +313,20 @@ with st.expander("Broker, inspection & other import costs — optional"):
 additional_duty_rate = 0.0
 additional_duty = customs_value * additional_duty_rate / 100
 
-st.subheader("9. Landed cost")
+st.subheader("Landed cost")
 landed = goods_value + freight + insurance + packaging + other_logistics + duty + additional_duty + import_tax + broker + inspection + other_import
 landed_per_kg = landed / quantity_kg
 st.metric("Landed cost", money(landed))
 st.metric("Landed cost / kg", money(landed_per_kg))
 
-st.subheader("10. Selling price")
+st.subheader("Selling price")
 selling_per_kg = st.number_input("Selling price (USD/kg)", min_value=0.0, value=7.00, step=0.10)
 revenue = quantity_kg * selling_per_kg
 profit = revenue - landed
 profit_per_kg = profit / quantity_kg
 margin = profit / revenue * 100 if revenue else 0.0
 
-st.subheader("11. Final result")
+st.subheader("Final result")
 a, b, c, d = st.columns(4)
 a.metric("Landed / kg", money(landed_per_kg))
 b.metric("Selling / kg", money(selling_per_kg))
@@ -336,7 +343,6 @@ with st.expander("Official sources & audit"):
     st.markdown(f"- [EU Access2Markets]({SOURCES['eu_a2m']})")
     st.markdown(f"- [USITC HTS]({SOURCES['us_hts']})")
     st.markdown(f"- [USITC HTS REST API]({SOURCES['us_api']})")
-    st.markdown(f"- [China Ministry of Finance]({SOURCES['china_mof']})")
     st.write(f"Tariff status: **{tariff['status']}**")
     st.write(f"Tariff source: {tariff['source']}")
     st.write(f"Tariff message: {tariff['message']}")
