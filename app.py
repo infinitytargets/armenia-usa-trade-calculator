@@ -57,7 +57,7 @@ def extract_text_values(obj):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_us_tariff(hs6):
-    """Read the live USITC HTS REST search endpoint; never invent a rate."""
+    """Read current USITC HTS data and inspect Chapter 99/additional measures."""
     try:
         response = requests.get(
             SOURCES["us_api"],
@@ -67,30 +67,43 @@ def fetch_us_tariff(hs6):
         response.raise_for_status()
         data = response.json()
     except Exception as exc:
-        return {"status": "SOURCE ERROR", "rate": None, "message": str(exc), "source": SOURCES["us_api"]}
+        return {"status": "SOURCE ERROR", "rate": None, "additional_rate": None, "message": str(exc), "source": SOURCES["us_api"]}
 
     texts = extract_text_values(data)
     matching = [x for x in texts if hs6.replace(".", "") in x.replace(".", "")]
     rate_candidates = []
-
     for text_value in matching + texts:
-        # Typical USITC rate text can be "Free", "3.2%", "$0.15/kg", etc.
         for m in re.finditer(r"(?i)(?:MFN|general|column\s*1)[^%]{0,120}?(\d+(?:\.\d+)?)\s*%", text_value):
             rate_candidates.append(float(m.group(1)))
-        if re.search(r"(?i)\\bfree\\b", text_value) and re.search(r"(?i)(MFN|general|column\\s*1)", text_value):
+        if re.search(r"(?i)\bfree\b", text_value) and re.search(r"(?i)(MFN|general|column\s*1)", text_value):
             rate_candidates.append(0.0)
 
-    if rate_candidates:
+    rate = rate_candidates[0] if rate_candidates else None
+
+    # Chapter 99 contains temporary/additional import measures. We expose a
+    # review flag unless the official response can be mapped to an exact line.
+    chapter99 = []
+    for text_value in texts:
+        if re.search(r"(?i)\b99\d{4}", text_value) and re.search(r"(?i)(additional|surcharge|tariff|duty)", text_value):
+            chapter99.append(text_value[:500])
+
+    if rate is not None:
         return {
             "status": "VERIFIED",
-            "rate": rate_candidates[0],
-            "message": "Retrieved from the official USITC HTS REST API.",
+            "rate": rate,
+            "additional_rate": None,
+            "additional_status": "MANUAL REVIEW" if chapter99 else "REVIEW CHAPTER 99",
+            "chapter99_matches": chapter99[:5],
+            "message": "Base rate retrieved from the official USITC HTS. Chapter 99/additional measures require exact line and origin applicability review.",
             "source": SOURCES["us_api"],
         }
 
     return {
         "status": "MANUAL REVIEW",
         "rate": None,
+        "additional_rate": None,
+        "additional_status": "MANUAL REVIEW",
+        "chapter99_matches": chapter99[:5],
         "message": "USITC responded, but the application could not safely map the returned data to a single legal rate.",
         "source": SOURCES["us_api"],
     }
@@ -287,7 +300,7 @@ inspection = st.number_input("Inspection / certification / handling (USD)", min_
 other_import = st.number_input("Other import costs (USD)", min_value=0.0, value=0.0, step=25.0)
 
 st.subheader("9. Landed cost")
-landed = goods_value + freight + insurance + other_logistics + duty + import_tax + broker + inspection + other_import
+landed = goods_value + freight + insurance + other_logistics + duty + additional_duty + import_tax + broker + inspection + other_import
 landed_per_kg = landed / quantity_kg
 st.metric("Landed cost", money(landed))
 st.metric("Landed cost / kg", money(landed_per_kg))
@@ -320,6 +333,10 @@ with st.expander("Official sources & audit"):
     st.write(f"Tariff status: **{tariff['status']}**")
     st.write(f"Tariff source: {tariff['source']}")
     st.write(f"Tariff message: {tariff['message']}")
+    if destination == "United States":
+        st.write(f"Additional measures status: **{tariff.get('additional_status', 'MANUAL REVIEW')}**")
+        for item in tariff.get("chapter99_matches", []):
+            st.caption(item)
     st.write(f"Tax status: **{tax_info['status']}**")
     st.write(f"Tax source: {tax_info['source']}")
     st.write(f"Tax message: {tax_info['message']}")
@@ -332,6 +349,7 @@ with st.expander("Calculation breakdown"):
     st.write(f"Other logistics: {money(other_logistics)}")
     st.write(f"Planning customs value: {money(customs_value)}")
     st.write(f"Import duty: {money(duty)}")
+    st.write(f"Additional duty / Chapter 99: {money(additional_duty)}")
     st.write(f"Import tax / VAT: {money(import_tax)}")
     st.write(f"Broker / clearance: {money(broker)}")
     st.write(f"Inspection / certification / handling: {money(inspection)}")
