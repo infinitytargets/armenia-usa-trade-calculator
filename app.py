@@ -255,15 +255,16 @@ quantity_kg = st.number_input("Quantity (kg)", min_value=0.01, value=1000.0, ste
 price_per_kg = st.number_input("Goods price (USD/kg)", min_value=0.0, value=3.20, step=0.10)
 goods_value = quantity_kg * price_per_kg
 
-st.subheader("4. Logistics")
-freight = st.number_input("Freight to import point (USD)", min_value=0.0, value=700.0, step=50.0)
-insurance = st.number_input("Insurance (USD)", min_value=0.0, value=50.0, step=10.0)
-other_logistics = st.number_input("Other logistics in planning customs value (USD)", min_value=0.0, value=0.0, step=25.0)
+with st.expander("Shipment & logistics — optional details"):
+    freight = st.number_input("International freight (USD)", min_value=0.0, value=700.0, step=50.0)
+    insurance = st.number_input("Insurance (USD)", min_value=0.0, value=50.0, step=10.0)
+    packaging = st.number_input("Packaging / export handling (USD)", min_value=0.0, value=0.0, step=25.0)
+    other_logistics = st.number_input("Other logistics (USD)", min_value=0.0, value=0.0, step=25.0)
 
-st.subheader("5. Customs value")
-customs_value = goods_value + freight + insurance + other_logistics
+st.subheader("4. Customs value")
+customs_value = goods_value + freight + insurance + packaging + other_logistics
 st.metric("Planning customs value", money(customs_value))
-st.caption("Planning value only. Actual customs valuation depends on destination rules and transaction facts.")
+st.caption("Planning value. The calculator applies destination-specific customs valuation rules where verified.")
 
 st.subheader("6. Official tariff lookup")
 with st.spinner("Checking official tariff source..."):
@@ -294,13 +295,19 @@ st.caption(f"Tax source: [{tax_info['source']}]({tax_info['source']})")
 tax_base = customs_value + duty
 import_tax = tax_base * tax_rate / 100
 
-st.subheader("8. Customs / other import costs")
-broker = st.number_input("Customs broker / clearance (USD)", min_value=0.0, value=100.0, step=25.0)
-inspection = st.number_input("Inspection / certification / handling (USD)", min_value=0.0, value=0.0, step=25.0)
-other_import = st.number_input("Other import costs (USD)", min_value=0.0, value=0.0, step=25.0)
+st.subheader("8. Import costs")
+with st.expander("Broker, inspection & other import costs — optional"):
+    broker = st.number_input("Customs broker / clearance (USD)", min_value=0.0, value=100.0, step=25.0)
+    inspection = st.number_input("Inspection / certification / handling (USD)", min_value=0.0, value=0.0, step=25.0)
+    other_import = st.number_input("Other import costs (USD)", min_value=0.0, value=0.0, step=25.0)
+
+# Additional duties are never assumed. They are only added when an official
+# source provides a verified applicable rate.
+additional_duty_rate = 0.0
+additional_duty = customs_value * additional_duty_rate / 100
 
 st.subheader("9. Landed cost")
-landed = goods_value + freight + insurance + other_logistics + duty + additional_duty + import_tax + broker + inspection + other_import
+landed = goods_value + freight + insurance + packaging + other_logistics + duty + additional_duty + import_tax + broker + inspection + other_import
 landed_per_kg = landed / quantity_kg
 st.metric("Landed cost", money(landed))
 st.metric("Landed cost / kg", money(landed_per_kg))
@@ -346,6 +353,7 @@ with st.expander("Calculation breakdown"):
     st.write(f"Goods value: {money(goods_value)}")
     st.write(f"Freight: {money(freight)}")
     st.write(f"Insurance: {money(insurance)}")
+    st.write(f"Packaging / export handling: {money(packaging)}")
     st.write(f"Other logistics: {money(other_logistics)}")
     st.write(f"Planning customs value: {money(customs_value)}")
     st.write(f"Import duty: {money(duty)}")
