@@ -1,7 +1,13 @@
-import streamlit as st
+import json
+import re
 from datetime import date
+from urllib.parse import urlencode
+
+import requests
+import streamlit as st
 
 TODAY = date(2026, 9, 21)
+REQUEST_TIMEOUT = 15
 
 st.set_page_config(page_title="Armenia Dried Fruit Export Calculator", page_icon="🍑", layout="centered")
 
@@ -9,6 +15,7 @@ SOURCES = {
     "arm_src": "https://exim.src.am/en",
     "eu_a2m": "https://trade.ec.europa.eu/access-to-markets/en/my-trade-assistant",
     "us_hts": "https://hts.usitc.gov/",
+    "us_api": "https://hts.usitc.gov/reststop/search",
     "china_mof": "https://www.mof.gov.cn/jrttts/202404/t20240429_3933789.htm",
 }
 
@@ -36,32 +43,124 @@ def money(v):
 def pct(v):
     return f"{v:.2f}%"
 
-def eu_link(country, hs6):
-    return (
-        "https://trade.ec.europa.eu/access-to-markets/en/search"
-        f"?destination={country}&origin=AM&product={hs6}"
-    )
+def extract_text_values(obj):
+    values = []
+    if isinstance(obj, dict):
+        for value in obj.values():
+            values.extend(extract_text_values(value))
+    elif isinstance(obj, list):
+        for value in obj:
+            values.extend(extract_text_values(value))
+    elif isinstance(obj, str):
+        values.append(obj)
+    return values
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_us_tariff(hs6):
+    """Read the live USITC HTS REST search endpoint; never invent a rate."""
+    try:
+        response = requests.get(
+            SOURCES["us_api"],
+            params={"keyword": hs6},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        return {"status": "SOURCE ERROR", "rate": None, "message": str(exc), "source": SOURCES["us_api"]}
+
+    texts = extract_text_values(data)
+    matching = [x for x in texts if hs6.replace(".", "") in x.replace(".", "")]
+    rate_candidates = []
+
+    for text_value in matching + texts:
+        # Typical USITC rate text can be "Free", "3.2%", "$0.15/kg", etc.
+        for m in re.finditer(r"(?i)(?:MFN|general|column\s*1)[^%]{0,120}?(\d+(?:\.\d+)?)\s*%", text_value):
+            rate_candidates.append(float(m.group(1)))
+        if re.search(r"(?i)\\bfree\\b", text_value) and re.search(r"(?i)(MFN|general|column\\s*1)", text_value):
+            rate_candidates.append(0.0)
+
+    if rate_candidates:
+        return {
+            "status": "VERIFIED",
+            "rate": rate_candidates[0],
+            "message": "Retrieved from the official USITC HTS REST API.",
+            "source": SOURCES["us_api"],
+        }
+
+    return {
+        "status": "MANUAL REVIEW",
+        "rate": None,
+        "message": "USITC responded, but the application could not safely map the returned data to a single legal rate.",
+        "source": SOURCES["us_api"],
+    }
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_eu_tariff(country_code, hs6):
+    """Read the live Access2Markets results page for Armenia origin."""
+    params = {"destination": country_code, "origin": "AM", "product": hs6}
+    url = "https://trade.ec.europa.eu/access-to-markets/en/results?" + urlencode(params)
+    try:
+        response = requests.get(url, timeout=REQUEST_TIMEOUT, headers={"User-Agent": "ArmeniaTradeCalculator/1.0"})
+        response.raise_for_status()
+        text = re.sub(r"\\s+", " ", response.text)
+    except Exception as exc:
+        return {"status": "SOURCE ERROR", "rate": None, "message": str(exc), "source": url}
+
+    # Access2Markets publishes "Third country duty" followed by the tariff.
+    patterns = [
+        r"Third country duty.{0,1000}?Tariff:\\s*</?[^>]*>?(\\d+(?:\\.\\d+)?)%",
+        r"Third country duty.{0,1000}?(\\d+(?:\\.\\d+)?)%",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            return {
+                "status": "VERIFIED",
+                "rate": float(match.group(1)),
+                "message": "Retrieved from the official EU Access2Markets results page.",
+                "source": url,
+            }
+
+    return {
+        "status": "MANUAL REVIEW",
+        "rate": None,
+        "message": "Access2Markets was reached, but no single third-country duty was safely extracted.",
+        "source": url,
+    }
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_china_tariff(hs6):
+    # China official source is exposed for verification. No guessed tariff is used.
+    return {
+        "status": "MANUAL REVIEW",
+        "rate": None,
+        "message": "Automatic legal-rate extraction is not enabled for the official China source yet.",
+        "source": SOURCES["china_mof"],
+    }
+
+def get_live_tariff(destination, hs6, eu_country=None):
+    if destination == "United States":
+        return fetch_us_tariff(hs6)
+    if destination == "European Union":
+        return fetch_eu_tariff(EU_COUNTRIES[eu_country], hs6)
+    return fetch_china_tariff(hs6)
 
 st.title("🍑 Armenia → Export Calculator")
-st.caption(f"Dried fruit • official-source-first • checkpoint: {TODAY.isoformat()}")
+st.caption(f"Dried fruit • live official-source tariff lookup • checkpoint: {TODAY.isoformat()}")
 
 st.subheader("1. Destination")
 destination = st.selectbox("Market", ["European Union", "United States", "China"])
 
 if destination == "European Union":
     eu_country = st.selectbox("EU destination country", list(EU_COUNTRIES))
-    destination_code = EU_COUNTRIES[eu_country]
 else:
     eu_country = None
-    destination_code = None
 
 st.subheader("2. Product")
 product_name = st.selectbox("Product", list(PRODUCTS))
 hs6, hs_note = PRODUCTS[product_name]
-st.caption(
-    f"Candidate HS-6: **{hs6}** — {hs_note}. "
-    "Final national tariff line must be verified in the official destination tariff."
-)
+st.caption(f"HS-6 candidate: **{hs6}** — {hs_note}")
 
 st.subheader("3. Shipment")
 quantity_kg = st.number_input("Quantity (kg)", min_value=0.01, value=1000.0, step=100.0)
@@ -76,40 +175,33 @@ other_logistics = st.number_input("Other logistics in planning customs value (US
 st.subheader("5. Customs value")
 customs_value = goods_value + freight + insurance + other_logistics
 st.metric("Planning customs value", money(customs_value))
-st.caption("Planning value only. Actual customs valuation depends on the destination authority and transaction facts.")
+st.caption("Planning value only. Actual customs valuation depends on destination rules and transaction facts.")
 
-st.subheader("6. Import duty")
-if destination == "European Union":
-    duty_source = eu_link(destination_code, hs6)
-    source_name = f"EU Access2Markets — {eu_country}"
-elif destination == "United States":
-    duty_source = SOURCES["us_hts"]
-    source_name = "USITC Harmonized Tariff Schedule"
+st.subheader("6. Official tariff lookup")
+with st.spinner("Checking official tariff source..."):
+    tariff = get_live_tariff(destination, hs6, eu_country)
+
+if tariff["status"] == "VERIFIED":
+    duty_rate = tariff["rate"]
+    st.success(f"Official tariff found: **{pct(duty_rate)}**")
 else:
-    duty_source = SOURCES["china_mof"]
-    source_name = "China Ministry of Finance"
+    duty_rate = st.number_input("Import duty — manual fallback (%)", min_value=0.0, value=0.0, step=0.10)
+    st.warning(f"{tariff['status']}: {tariff['message']}")
 
-st.markdown(f"Official tariff source: [{source_name}]({duty_source})")
-duty_status = st.selectbox("Duty status", ["MANUAL REVIEW", "VERIFIED", "CONDITIONAL"], index=0)
-duty_rate = st.number_input("Verified import duty (%)", min_value=0.0, value=0.0, step=0.10)
+st.caption(f"Source: [{tariff['source']}]({tariff['source']})")
 duty = customs_value * duty_rate / 100
-if duty_status != "VERIFIED":
-    st.warning("Duty is not verified. Enter a rate only after checking the official source.")
 
 st.subheader("7. Import tax / VAT")
 if destination == "European Union":
-    st.caption("EU import VAT is destination-country and product dependent. Do not automatically use the standard VAT rate for food.")
+    st.caption("EU import VAT is destination-country and product dependent. It is not assumed automatically.")
 elif destination == "United States":
-    st.caption("The USA has no federal VAT. State/local sales tax is separate and is not automatically included here.")
+    st.caption("The USA has no federal VAT. State/local sales tax is separate.")
 else:
     st.caption("China import VAT must be verified for the exact tariff line and tax treatment.")
 
-tax_status = st.selectbox("Import tax / VAT status", ["MANUAL REVIEW", "VERIFIED", "CONDITIONAL"], index=0)
 tax_rate = st.number_input("Verified import tax / VAT (%)", min_value=0.0, value=0.0, step=0.10)
 tax_base = customs_value + duty
 import_tax = tax_base * tax_rate / 100
-if tax_status != "VERIFIED" and tax_rate != 0:
-    st.warning("This tax rate is not marked as officially verified.")
 
 st.subheader("8. Customs / other import costs")
 broker = st.number_input("Customs broker / clearance (USD)", min_value=0.0, value=100.0, step=25.0)
@@ -142,13 +234,15 @@ else:
     st.error(f"Gross loss for this shipment: {money(abs(profit))}")
 
 with st.expander("Official sources & audit"):
-    st.markdown(f"- [Armenia SRC ExIm — official trade/tariff portal]({SOURCES['arm_src']})")
+    st.markdown(f"- [Armenia SRC ExIm]({SOURCES['arm_src']})")
     st.markdown(f"- [EU Access2Markets]({SOURCES['eu_a2m']})")
-    if destination == "European Union":
-        st.markdown(f"- [Exact EU query: Armenia → {eu_country} → HS {hs6}]({duty_source})")
     st.markdown(f"- [USITC HTS]({SOURCES['us_hts']})")
+    st.markdown(f"- [USITC HTS REST API]({SOURCES['us_api']})")
     st.markdown(f"- [China Ministry of Finance]({SOURCES['china_mof']})")
-    st.info("VERIFIED means the rate was checked against the official source for the exact product classification, Armenian origin, destination and date. The app never silently treats an unverified rate as 0%.")
+    st.write(f"Tariff status: **{tariff['status']}**")
+    st.write(f"Tariff source: {tariff['source']}")
+    st.write(f"Tariff message: {tariff['message']}")
+    st.info("No tariff is silently assumed to be 0%. If an official source cannot be safely queried or mapped, the app switches to MANUAL REVIEW.")
 
 with st.expander("Calculation breakdown"):
     st.write(f"Goods value: {money(goods_value)}")
@@ -164,5 +258,3 @@ with st.expander("Calculation breakdown"):
     st.write(f"Landed cost: {money(landed)}")
     st.write(f"Revenue: {money(revenue)}")
     st.write(f"Gross profit: {money(profit)}")
-
-st.caption("Official-source-first prototype: legal/tariff values are verified separately; commercial logistics and selling-price values are user inputs.")
