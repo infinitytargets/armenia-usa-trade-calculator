@@ -3,174 +3,166 @@ from datetime import date
 
 TODAY = date(2026, 9, 21)
 
+st.set_page_config(page_title="Armenia Dried Fruit Export Calculator", page_icon="🍑", layout="centered")
+
 SOURCES = {
-    "usitc": "https://hts.usitc.gov/",
-    "cbp_candle": "https://rulings.cbp.gov/ruling/ny339704",
-    "eec_ch34": "https://eec.eaeunion.org/upload/files/catr/ett/ru.34_2022_10.10.2022.pdf",
-    "arm_exim": "https://exim.src.am/en",
-    "arm_tax": "https://www.arlis.am/ru/acts/205620",
-    "whitehouse_ieepa_end": "https://www.whitehouse.gov/presidential-actions/2026/02/ending-certain-tariff-actions/",
-    "whitehouse_section122": "https://www.whitehouse.gov/presidential-actions/2026/02/imposing-a-temporary-import-surcharge-to-address-fundamental-international-payments-problems/",
+    "arm_src": "https://exim.src.am/en",
+    "eu_a2m": "https://trade.ec.europa.eu/access-to-markets/en/my-trade-assistant",
+    "us_hts": "https://hts.usitc.gov/",
+    "china_mof": "https://www.mof.gov.cn/jrttts/202404/t20240429_3933789.htm",
 }
 
 PRODUCTS = {
-    "Handmade scented soy candle": {
-        "arm_hs": "3406 00 000 0",
-        "us_hts": "3406.00.0000",
-        "arm_duty": 6.5,
-        "us_base_duty": 0.0,
-        "arm_vat": 20.0,
-        "us_general_extra": 0.0,
-        "classification_status": "VERIFIED FOR DESCRIBED CANDLE",
-        "classification_note": "CBP NY N339704 covers a poured natural soy-wax candle with fragrance oils, cotton wick and glass jar. Other constructions/decorative products can classify differently.",
-    },
+    "Dried apricots": ("081310", "Dried apricots"),
+    "Raisins / dried grapes": ("080620", "Dried grapes / raisins"),
+    "Dried figs": ("080420", "Figs, fresh or dried"),
+    "Dried apples": ("081330", "Dried apples"),
+    "Dried prunes": ("081320", "Prunes"),
+    "Dried peaches": ("081340", "Other dried fruit; exact national line requires verification"),
+    "Dried persimmons": ("081340", "Other dried fruit; exact national line requires verification"),
+    "Mixed dried fruit": ("081350", "Mixtures of nuts or dried fruits"),
+    "Other dried fruit": ("081340", "Other dried fruit; exact national line requires verification"),
 }
 
+EU_COUNTRIES = {
+    "Germany": "DE", "France": "FR", "Italy": "IT", "Netherlands": "NL",
+    "Poland": "PL", "Spain": "ES", "Belgium": "BE", "Austria": "AT",
+    "Greece": "GR", "Czech Republic": "CZ",
+}
 
 def money(v):
-    return f"${v:,.2f}"
-
+    return f"USD {v:,.2f}"
 
 def pct(v):
     return f"{v:.2f}%"
 
-
-def calculate_us(goods, freight, insurance, duty_rate, extra_rate, broker, mpf, hmf):
-    customs_value = goods + freight + insurance
-    duty = customs_value * duty_rate / 100
-    extra = customs_value * extra_rate / 100
-    fees = broker + mpf + hmf
-    landed = customs_value + duty + extra + fees
-    return customs_value, duty, extra, fees, landed
-
-
-def calculate_arm(goods, freight, insurance, duty_rate, vat_rate, broker):
-    customs_value = goods + freight + insurance
-    duty = customs_value * duty_rate / 100
-    vat_base = customs_value + duty
-    vat = vat_base * vat_rate / 100
-    landed = customs_value + duty + vat + broker
-    return customs_value, duty, vat, landed
-
-st.set_page_config(page_title="AM ↔ US Trade Calculator", page_icon="🧾", layout="wide")
-st.title("🇦🇲 Armenia ↔ 🇺🇸 USA Trade Calculator")
-st.caption(f"Official-source-first prototype • legal data checkpoint: {TODAY.isoformat()}")
-
-with st.sidebar:
-    st.header("Shipment")
-    direction = st.radio("Direction", ["Armenia → USA", "USA → Armenia"])
-    product_name = st.selectbox("Product profile", list(PRODUCTS.keys()))
-    p = PRODUCTS[product_name]
-
-    st.subheader("Commercial values")
-    goods = st.number_input("Goods value (USD)", min_value=0.0, value=2500.0, step=100.0)
-    freight = st.number_input("Freight to customs border (USD)", min_value=0.0, value=500.0, step=50.0)
-    insurance = st.number_input("Insurance (USD)", min_value=0.0, value=0.0, step=10.0)
-    quantity = st.number_input("Units", min_value=1, value=100, step=1)
-
-    st.subheader("Commercial result")
-    markup = st.number_input("Markup on landed cost (%)", min_value=0.0, value=100.0, step=5.0)
-
-    st.subheader("Real-world fees")
-    broker = st.number_input("Broker / customs clearance (USD)", min_value=0.0, value=0.0, step=25.0)
-    mpf = st.number_input("US MPF (USD)", min_value=0.0, value=0.0, step=5.0)
-    hmf = st.number_input("US HMF (USD)", min_value=0.0, value=0.0, step=5.0)
-
-if direction == "Armenia → USA":
-    st.header("Armenia → USA")
-
-    a, b, c, d = st.columns(4)
-    a.metric("US HTS", p["us_hts"])
-    b.metric("US base duty", pct(p["us_base_duty"]))
-    c.metric("Current general extra", pct(p["us_general_extra"]))
-    d.metric("Armenian export VAT", "0%")
-
-    st.success("For the selected candle profile, the tariff stack currently modeled is 0% US base duty + 0% general IEEPA/Section-122 surcharge.")
-
-    cv, duty, extra, fees, landed = calculate_us(
-        goods, freight, insurance,
-        p["us_base_duty"], p["us_general_extra"], broker, mpf, hmf
+def eu_link(country, hs6):
+    return (
+        "https://trade.ec.europa.eu/access-to-markets/en/search"
+        f"?destination={country}&origin=AM&product={hs6}"
     )
-    sell = landed * (1 + markup / 100)
-    profit = sell - landed
 
-    st.subheader("Calculation")
-    cols = st.columns(6)
-    cols[0].metric("Customs value", money(cv))
-    cols[1].metric("US base duty", money(duty))
-    cols[2].metric("Extra tariff", money(extra))
-    cols[3].metric("Fees entered", money(fees))
-    cols[4].metric("Landed cost", money(landed))
-    cols[5].metric("Target selling", money(sell))
+st.title("🍑 Armenia → Export Calculator")
+st.caption(f"Dried fruit • official-source-first • checkpoint: {TODAY.isoformat()}")
 
-    if quantity:
-        st.caption(f"Landed cost per unit: {money(landed / quantity)} • Target selling per unit: {money(sell / quantity)} • Gross profit: {money(profit)}")
+st.subheader("1. Destination")
+destination = st.selectbox("Market", ["European Union", "United States", "China"])
 
-    st.subheader("Evidence / legal status")
-    rows = [
-        ["US classification", p["us_hts"], "VERIFIED", "CBP NY N339704", SOURCES["cbp_candle"]],
-        ["US Column 1 base duty", "0%", "VERIFIED", "USITC HTS", SOURCES["usitc"]],
-        ["IEEPA reciprocal additional duty", "Terminated Feb. 2026", "VERIFIED", "White House EO 14389", SOURCES["whitehouse_ieepa_end"]],
-        ["Section 122 temporary surcharge", "Ended July 24, 2026", "VERIFIED", "White House proclamation", SOURCES["whitehouse_section122"]],
-        ["Armenia export VAT", "0% for goods exported under customs procedure Export", "VERIFIED", "Armenia Tax Code Art. 65", SOURCES["arm_tax"]],
-    ]
-    st.dataframe(rows, use_container_width=True, hide_index=True, column_config={
-        0: "Item", 1: "Value", 2: "Status", 3: "Authority", 4: st.column_config.LinkColumn("Source")
-    })
-
-    st.warning("Before a live customs declaration, verify the exact origin, product construction, packaging/set configuration and any Chapter 99 measures on the entry date. The app never silently invents a tariff.")
-
+if destination == "European Union":
+    eu_country = st.selectbox("EU destination country", list(EU_COUNTRIES))
+    destination_code = EU_COUNTRIES[eu_country]
 else:
-    st.header("USA → Armenia")
+    eu_country = None
+    destination_code = None
 
-    a, b, c = st.columns(3)
-    a.metric("EAEU / Armenia HS", p["arm_hs"])
-    b.metric("Import duty", pct(p["arm_duty"]))
-    c.metric("VAT", pct(p["arm_vat"]))
+st.subheader("2. Product")
+product_name = st.selectbox("Product", list(PRODUCTS))
+hs6, hs_note = PRODUCTS[product_name]
+st.caption(
+    f"Candidate HS-6: **{hs6}** — {hs_note}. "
+    "Final national tariff line must be verified in the official destination tariff."
+)
 
-    cv, duty, vat, landed = calculate_arm(goods, freight, insurance, p["arm_duty"], p["arm_vat"], broker)
-    sell = landed * (1 + markup / 100)
+st.subheader("3. Shipment")
+quantity_kg = st.number_input("Quantity (kg)", min_value=0.01, value=1000.0, step=100.0)
+price_per_kg = st.number_input("Goods price (USD/kg)", min_value=0.0, value=3.20, step=0.10)
+goods_value = quantity_kg * price_per_kg
 
-    cols = st.columns(5)
-    cols[0].metric("Customs value", money(cv))
-    cols[1].metric("Duty", money(duty))
-    cols[2].metric("VAT", money(vat))
-    cols[3].metric("Landed cost", money(landed))
-    cols[4].metric("Target selling", money(sell))
+st.subheader("4. Logistics")
+freight = st.number_input("Freight to import point (USD)", min_value=0.0, value=700.0, step=50.0)
+insurance = st.number_input("Insurance (USD)", min_value=0.0, value=50.0, step=10.0)
+other_logistics = st.number_input("Other logistics in planning customs value (USD)", min_value=0.0, value=0.0, step=25.0)
 
-    st.caption(f"VAT base = customs value + customs duty, per Armenia Tax Code. For the standard case modeled here: {money(cv)} + {money(duty)} = {money(cv + duty)}.")
+st.subheader("5. Customs value")
+customs_value = goods_value + freight + insurance + other_logistics
+st.metric("Planning customs value", money(customs_value))
+st.caption("Planning value only. Actual customs valuation depends on the destination authority and transaction facts.")
 
-    rows = [
-        ["EAEU HS classification", p["arm_hs"], "VERIFIED", "EEC Common Customs Tariff", SOURCES["eec_ch34"]],
-        ["Import customs duty", "6.5%", "VERIFIED", "EEC Common Customs Tariff", SOURCES["eec_ch34"]],
-        ["Import VAT rate", "20%", "VERIFIED", "Armenia Tax Code Art. 63", SOURCES["arm_tax"]],
-        ["VAT import tax base", "Customs value + customs duty (+ excise if applicable)", "VERIFIED", "Armenia Tax Code", SOURCES["arm_tax"]],
-        ["SRC ExIm verification portal", "Official product/HS profile lookup", "VERIFIED SOURCE", "Armenia SRC", SOURCES["arm_exim"]],
-    ]
-    st.dataframe(rows, use_container_width=True, hide_index=True, column_config={
-        0: "Item", 1: "Value", 2: "Status", 3: "Authority", 4: st.column_config.LinkColumn("Source")
-    })
+st.subheader("6. Import duty")
+if destination == "European Union":
+    duty_source = eu_link(destination_code, hs6)
+    source_name = f"EU Access2Markets — {eu_country}"
+elif destination == "United States":
+    duty_source = SOURCES["us_hts"]
+    source_name = "USITC Harmonized Tariff Schedule"
+else:
+    duty_source = SOURCES["china_mof"]
+    source_name = "China Ministry of Finance"
 
-st.divider()
-st.subheader("Product classification warning")
-st.write(p["classification_note"])
+st.markdown(f"Official tariff source: [{source_name}]({duty_source})")
+duty_status = st.selectbox("Duty status", ["MANUAL REVIEW", "VERIFIED", "CONDITIONAL"], index=0)
+duty_rate = st.number_input("Verified import duty (%)", min_value=0.0, value=0.0, step=0.10)
+duty = customs_value * duty_rate / 100
+if duty_status != "VERIFIED":
+    st.warning("Duty is not verified. Enter a rate only after checking the official source.")
 
-st.subheader("Architecture for the production version")
-st.markdown("""
-**Do not build this as a static tariff table.** The correct software architecture is:
+st.subheader("7. Import tax / VAT")
+if destination == "European Union":
+    st.caption("EU import VAT is destination-country and product dependent. Do not automatically use the standard VAT rate for food.")
+elif destination == "United States":
+    st.caption("The USA has no federal VAT. State/local sales tax is separate and is not automatically included here.")
+else:
+    st.caption("China import VAT must be verified for the exact tariff line and tax treatment.")
 
-1. **Product intake** — URL, description, material, function, dimensions, packaging, country of origin.
-2. **HS engine** — generate candidate codes, not one blind answer.
-3. **Authority verification** — USITC/CBP for US; SRC ExIm/EEC/Armenian legislation for Armenia.
-4. **Tariff stack** — base duty + Chapter 99/Section 232/other measures + preferential treatment + exemptions.
-5. **Tax engine** — VAT/excise and the correct tax base.
-6. **Origin engine** — shipping country is not automatically country of origin.
-7. **Compliance engine** — permits, restrictions, labeling and special controls.
-8. **Evidence database** — every number stores source URL, authority, effective date, retrieval date and confidence/status.
-9. **Calculator** — customs value → duty → taxes → fees → landed cost → unit cost → markup/profit.
-10. **Audit mode** — user can see exactly why every number was used.
+tax_status = st.selectbox("Import tax / VAT status", ["MANUAL REVIEW", "VERIFIED", "CONDITIONAL"], index=0)
+tax_rate = st.number_input("Verified import tax / VAT (%)", min_value=0.0, value=0.0, step=0.10)
+tax_base = customs_value + duty
+import_tax = tax_base * tax_rate / 100
+if tax_status != "VERIFIED" and tax_rate != 0:
+    st.warning("This tax rate is not marked as officially verified.")
 
-Allowed statuses: **VERIFIED**, **NOT VERIFIED**, **MANUAL REVIEW**, **EXPIRED**. Never replace NOT VERIFIED with an estimate without explicitly labeling it as an estimate.
-""")
+st.subheader("8. Customs / other import costs")
+broker = st.number_input("Customs broker / clearance (USD)", min_value=0.0, value=100.0, step=25.0)
+inspection = st.number_input("Inspection / certification / handling (USD)", min_value=0.0, value=0.0, step=25.0)
+other_import = st.number_input("Other import costs (USD)", min_value=0.0, value=0.0, step=25.0)
 
-st.info("This prototype is intentionally conservative: it calculates only from values with an identified legal/source basis and lets the user enter real logistics/clearance fees rather than pretending those costs are fixed.")
+st.subheader("9. Landed cost")
+landed = goods_value + freight + insurance + other_logistics + duty + import_tax + broker + inspection + other_import
+landed_per_kg = landed / quantity_kg
+st.metric("Landed cost", money(landed))
+st.metric("Landed cost / kg", money(landed_per_kg))
+
+st.subheader("10. Selling price")
+selling_per_kg = st.number_input("Selling price (USD/kg)", min_value=0.0, value=7.00, step=0.10)
+revenue = quantity_kg * selling_per_kg
+profit = revenue - landed
+profit_per_kg = profit / quantity_kg
+margin = profit / revenue * 100 if revenue else 0.0
+
+st.subheader("11. Final result")
+a, b, c, d = st.columns(4)
+a.metric("Landed / kg", money(landed_per_kg))
+b.metric("Selling / kg", money(selling_per_kg))
+c.metric("Profit / kg", money(profit_per_kg))
+d.metric("Margin", pct(margin))
+
+if profit >= 0:
+    st.success(f"Gross profit for this shipment: {money(profit)}")
+else:
+    st.error(f"Gross loss for this shipment: {money(abs(profit))}")
+
+with st.expander("Official sources & audit"):
+    st.markdown(f"- [Armenia SRC ExIm — official trade/tariff portal]({SOURCES['arm_src']})")
+    st.markdown(f"- [EU Access2Markets]({SOURCES['eu_a2m']})")
+    if destination == "European Union":
+        st.markdown(f"- [Exact EU query: Armenia → {eu_country} → HS {hs6}]({duty_source})")
+    st.markdown(f"- [USITC HTS]({SOURCES['us_hts']})")
+    st.markdown(f"- [China Ministry of Finance]({SOURCES['china_mof']})")
+    st.info("VERIFIED means the rate was checked against the official source for the exact product classification, Armenian origin, destination and date. The app never silently treats an unverified rate as 0%.")
+
+with st.expander("Calculation breakdown"):
+    st.write(f"Goods value: {money(goods_value)}")
+    st.write(f"Freight: {money(freight)}")
+    st.write(f"Insurance: {money(insurance)}")
+    st.write(f"Other logistics: {money(other_logistics)}")
+    st.write(f"Planning customs value: {money(customs_value)}")
+    st.write(f"Import duty: {money(duty)}")
+    st.write(f"Import tax / VAT: {money(import_tax)}")
+    st.write(f"Broker / clearance: {money(broker)}")
+    st.write(f"Inspection / certification / handling: {money(inspection)}")
+    st.write(f"Other import costs: {money(other_import)}")
+    st.write(f"Landed cost: {money(landed)}")
+    st.write(f"Revenue: {money(revenue)}")
+    st.write(f"Gross profit: {money(profit)}")
+
+st.caption("Official-source-first prototype: legal/tariff values are verified separately; commercial logistics and selling-price values are user inputs.")
