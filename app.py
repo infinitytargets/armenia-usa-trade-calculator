@@ -9,7 +9,7 @@ import streamlit as st
 TODAY = date(2026, 9, 21)
 REQUEST_TIMEOUT = 15
 
-st.set_page_config(page_title="Armenia Export Calculator", page_icon="🍑", layout="centered")
+st.set_page_config(page_title="Armenia Export Calculator", page_icon="🧮", layout="centered")
 
 st.markdown("""
 <style>
@@ -26,7 +26,7 @@ SOURCES = {
     "us_api": "https://hts.usitc.gov/reststop/search",
 }
 
-PRODUCTS = {
+DRIED_FRUIT_PRODUCTS = {
     "Dried apricots": ("081310", "Dried apricots"),
     "Raisins / dried grapes": ("080620", "Dried grapes / raisins"),
     "Dried figs": ("080420", "Figs, fresh or dried"),
@@ -150,10 +150,9 @@ def fetch_eu_tariff(country_code, hs6):
     }
 
 TEDB_WSDL = "https://ec.europa.eu/taxation_customs/tedb/ws/VatRetrievalService"
-CHINA_CUSTOMS_TAX_LOOKUP = "https://online.customs.gov.cn/ociswebserver/pages/jckspsl/index.html"
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_eu_vat(country_code, hs6):
+def fetch_eu_vat(country_code, hs6, category=None):
     """Use the European Commission TEDB SOAP service for VAT rates by CN code."""
     cn_code = hs6 + "00"
     envelope = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -167,7 +166,7 @@ def fetch_eu_vat(country_code, hs6):
    <urn1:from>{TODAY.isoformat()}</urn1:from>
    <urn1:to>{TODAY.isoformat()}</urn1:to>
    <urn1:cnCodes><urn1:value>{cn_code}</urn1:value></urn1:cnCodes>
-   <urn1:categories><urn1:identifier>FOODSTUFFS</urn1:identifier></urn1:categories>
+   {f"<urn1:categories><urn1:identifier>{category}</urn1:identifier></urn1:categories>" if category else ""}
   </urn:retrieveVatRatesReqMsg>
  </urn:Body>
 </soapenv:Envelope>"""
@@ -192,7 +191,7 @@ def fetch_eu_vat(country_code, hs6):
             return {
                 "status": "VERIFIED",
                 "rate": min(rates),
-                "message": f"Retrieved from European Commission TEDB for CN {cn_code}; FOODSTUFFS category included.",
+                "message": f"Retrieved from European Commission TEDB for CN {cn_code}.",
                 "source": TEDB_WSDL,
             }
     except Exception as exc:
@@ -229,9 +228,9 @@ def get_live_tariff(destination, hs6, eu_country=None):
         return fetch_eu_tariff(EU_COUNTRIES[eu_country], hs6)
     return fetch_china_tariff(hs6)
 
-def get_live_tax(destination, hs6, eu_country=None):
+def get_live_tax(destination, hs6, eu_country=None, vat_category=None):
     if destination == "European Union":
-        return fetch_eu_vat(EU_COUNTRIES[eu_country], hs6)
+        return fetch_eu_vat(EU_COUNTRIES[eu_country], hs6, vat_category)
     if destination == "United States":
         return {
             "status": "VERIFIED",
@@ -241,133 +240,157 @@ def get_live_tax(destination, hs6, eu_country=None):
         }
     return fetch_china_vat(hs6)
 
-st.title("🍑 Armenia → Export Calculator")
-st.caption("Dried fruit • EU & USA • official-source rates when available")
+st.title("🧮 Armenia Export Calculator")
+st.caption("EU & USA • official-source rates when available")
 
-st.subheader("Destination")
-destination = st.selectbox("Market", ["European Union", "United States"])
+tab_fruit, tab_candle = st.tabs(["🍑 Dried Fruits", "🕯️ Scented Candles"])
 
-if destination == "European Union":
-    eu_country = st.selectbox("EU destination country", list(EU_COUNTRIES))
-else:
-    eu_country = None
+def run_calculator(products, title_label, vat_category=None):
+    st.subheader("Destination")
+    destination = st.selectbox("Market", ["European Union", "United States"], key=f"{title_label}_destination")
+    if destination == "European Union":
+        eu_country = st.selectbox("EU destination country", list(EU_COUNTRIES), key=f"{title_label}_eu_country")
+    else:
+        eu_country = None
 
-st.subheader("Product")
-product_name = st.selectbox("Product", list(PRODUCTS))
-hs6, hs_note = PRODUCTS[product_name]
-st.caption(f"HS-6 candidate: **{hs6}** — {hs_note}")
+    st.subheader("Product")
+    product_name = st.selectbox("Product", list(products), key=f"{title_label}_product")
+    hs6, hs_note = products[product_name]
+    st.caption(f"HS-6 candidate: **{hs6}** — {hs_note}")
 
-st.subheader("Shipment")
-quantity_kg = st.number_input("Quantity (kg)", min_value=0.01, value=1000.0, step=100.0)
-price_per_kg = st.number_input("Goods price (USD/kg)", min_value=0.0, value=3.20, step=0.10)
-goods_value = quantity_kg * price_per_kg
+    st.subheader("Shipment")
+    quantity_kg = st.number_input("Quantity (kg)", min_value=0.01, value=1000.0, step=100.0, key=f"{title_label}_kg")
+    default_price = 3.20 if title_label == "Dried Fruits" else 12.00
+    price_per_kg = st.number_input("Goods price (USD/kg)", min_value=0.0, value=default_price, step=0.10, key=f"{title_label}_price")
+    goods_value = quantity_kg * price_per_kg
 
-with st.expander("Shipment & logistics — optional details"):
-    freight = st.number_input("International freight (USD)", min_value=0.0, value=700.0, step=50.0)
-    insurance = st.number_input("Insurance (USD)", min_value=0.0, value=50.0, step=10.0)
-    packaging = st.number_input("Packaging / export handling (USD)", min_value=0.0, value=0.0, step=25.0)
-    other_logistics = st.number_input("Other logistics (USD)", min_value=0.0, value=0.0, step=25.0)
+    quantity_units = None
+    unit_weight_g = None
+    if title_label == "Scented Candles":
+        quantity_units = st.number_input("Number of candles", min_value=1, value=500, step=50, key=f"{title_label}_units")
+        unit_weight_g = st.number_input("Average candle weight (g)", min_value=1.0, value=250.0, step=10.0, key=f"{title_label}_weight")
+        st.caption(f"Calculated product weight: **{quantity_units * unit_weight_g / 1000:,.2f} kg**")
 
-st.subheader("Customs value")
-customs_value = goods_value + freight + insurance + packaging + other_logistics
-st.metric("Planning customs value", money(customs_value))
-st.caption("Planning value. The calculator applies destination-specific customs valuation rules where verified.")
+    with st.expander("Shipment & logistics — optional details"):
+        freight = st.number_input("International freight (USD)", min_value=0.0, value=700.0, step=50.0, key=f"{title_label}_freight")
+        insurance = st.number_input("Insurance (USD)", min_value=0.0, value=50.0, step=10.0, key=f"{title_label}_insurance")
+        packaging = st.number_input("Packaging / export handling (USD)", min_value=0.0, value=100.0 if title_label == "Scented Candles" else 0.0, step=25.0, key=f"{title_label}_packaging")
+        other_logistics = st.number_input("Other logistics (USD)", min_value=0.0, value=0.0, step=25.0, key=f"{title_label}_other_logistics")
 
-st.subheader("Import duty")
-with st.spinner("Checking official tariff source..."):
-    tariff = get_live_tariff(destination, hs6, eu_country)
+    st.subheader("Customs value")
+    customs_value = goods_value + freight + insurance + packaging + other_logistics
+    st.metric("Planning customs value", money(customs_value))
+    st.caption("Planning value. Confirm the exact customs valuation rules for the destination tariff line and Incoterms.")
 
-if tariff["status"] == "VERIFIED":
-    duty_rate = tariff["rate"]
-    st.success(f"Official tariff found: **{pct(duty_rate)}**")
-else:
-    duty_rate = st.number_input("Import duty — manual fallback (%)", min_value=0.0, value=0.0, step=0.10)
-    st.warning(f"{tariff['status']}: {tariff['message']}")
+    st.subheader("Import duty")
+    with st.spinner("Checking official tariff source..."):
+        tariff = get_live_tariff(destination, hs6, eu_country)
+    if tariff["status"] == "VERIFIED":
+        duty_rate = tariff["rate"]
+        st.success(f"Official tariff found: **{pct(duty_rate)}**")
+    else:
+        duty_rate = st.number_input("Import duty — manual fallback (%)", min_value=0.0, value=0.0, step=0.10, key=f"{title_label}_duty")
+        st.warning(f"{tariff['status']}: {tariff['message']}")
+    st.caption(f"Source: [{tariff['source']}]({tariff['source']})")
+    duty = customs_value * duty_rate / 100
 
-st.caption(f"Source: [{tariff['source']}]({tariff['source']})")
-duty = customs_value * duty_rate / 100
+    st.subheader("Import tax / VAT")
+    with st.spinner("Checking official tax source..."):
+        tax_info = get_live_tax(destination, hs6, eu_country, vat_category)
+    if tax_info["status"] == "VERIFIED":
+        tax_rate = tax_info["rate"]
+        st.success(f"Official import tax / VAT found: **{pct(tax_rate)}**")
+    else:
+        tax_rate = st.number_input("Import tax / VAT — manual fallback (%)", min_value=0.0, value=0.0, step=0.10, key=f"{title_label}_tax")
+        st.warning(f"{tax_info['status']}: {tax_info['message']}")
+    st.caption(f"Tax source: [{tax_info['source']}]({tax_info['source']})")
+    tax_base = customs_value + duty
+    import_tax = tax_base * tax_rate / 100
 
-st.subheader("Import tax / VAT")
-with st.spinner("Checking official tax source..."):
-    tax_info = get_live_tax(destination, hs6, eu_country)
+    st.subheader("Import costs")
+    with st.expander("Broker, inspection & other import costs — optional"):
+        broker = st.number_input("Customs broker / clearance (USD)", min_value=0.0, value=100.0, step=25.0, key=f"{title_label}_broker")
+        inspection = st.number_input("Inspection / certification / handling (USD)", min_value=0.0, value=0.0, step=25.0, key=f"{title_label}_inspection")
+        other_import = st.number_input("Other import costs (USD)", min_value=0.0, value=0.0, step=25.0, key=f"{title_label}_other_import")
 
-if tax_info["status"] == "VERIFIED":
-    tax_rate = tax_info["rate"]
-    st.success(f"Official import tax / VAT found: **{pct(tax_rate)}**")
-else:
-    tax_rate = st.number_input("Import tax / VAT — manual fallback (%)", min_value=0.0, value=0.0, step=0.10)
-    st.warning(f"{tax_info['status']}: {tax_info['message']}")
+    additional_duty = 0.0
+    st.subheader("Landed cost")
+    landed = goods_value + freight + insurance + packaging + other_logistics + duty + additional_duty + import_tax + broker + inspection + other_import
+    landed_per_kg = landed / quantity_kg
+    st.metric("Landed cost", money(landed))
+    st.metric("Landed cost / kg", money(landed_per_kg))
 
-st.caption(f"Tax source: [{tax_info['source']}]({tax_info['source']})")
-tax_base = customs_value + duty
-import_tax = tax_base * tax_rate / 100
+    if title_label == "Scented Candles":
+        landed_per_unit = landed / quantity_units
+        st.metric("Landed cost / candle", money(landed_per_unit))
 
-st.subheader("Import costs")
-with st.expander("Broker, inspection & other import costs — optional"):
-    broker = st.number_input("Customs broker / clearance (USD)", min_value=0.0, value=100.0, step=25.0)
-    inspection = st.number_input("Inspection / certification / handling (USD)", min_value=0.0, value=0.0, step=25.0)
-    other_import = st.number_input("Other import costs (USD)", min_value=0.0, value=0.0, step=25.0)
+    st.subheader("Selling price")
+    default_selling = 7.00 if title_label == "Dried Fruits" else 24.00
+    selling_per_kg = st.number_input("Selling price (USD/kg)", min_value=0.0, value=default_selling, step=0.10, key=f"{title_label}_selling")
+    revenue = quantity_kg * selling_per_kg
+    profit = revenue - landed
+    profit_per_kg = profit / quantity_kg
+    margin = profit / revenue * 100 if revenue else 0.0
 
-# Additional duties are never assumed. They are only added when an official
-# source provides a verified applicable rate.
-additional_duty_rate = 0.0
-additional_duty = customs_value * additional_duty_rate / 100
+    if title_label == "Scented Candles":
+        selling_per_unit = selling_per_kg * (unit_weight_g / 1000)
+        profit_per_unit = selling_per_unit - landed_per_unit
+        st.metric("Selling price / candle", money(selling_per_unit))
+        st.metric("Profit / candle", money(profit_per_unit))
 
-st.subheader("Landed cost")
-landed = goods_value + freight + insurance + packaging + other_logistics + duty + additional_duty + import_tax + broker + inspection + other_import
-landed_per_kg = landed / quantity_kg
-st.metric("Landed cost", money(landed))
-st.metric("Landed cost / kg", money(landed_per_kg))
+    st.subheader("Final result")
+    a, b, c, d = st.columns(4)
+    a.metric("Landed / kg", money(landed_per_kg))
+    b.metric("Selling / kg", money(selling_per_kg))
+    c.metric("Profit / kg", money(profit_per_kg))
+    d.metric("Margin", pct(margin))
+    if profit >= 0:
+        st.success(f"Gross profit for this shipment: {money(profit)}")
+    else:
+        st.error(f"Gross loss for this shipment: {money(abs(profit))}")
 
-st.subheader("Selling price")
-selling_per_kg = st.number_input("Selling price (USD/kg)", min_value=0.0, value=7.00, step=0.10)
-revenue = quantity_kg * selling_per_kg
-profit = revenue - landed
-profit_per_kg = profit / quantity_kg
-margin = profit / revenue * 100 if revenue else 0.0
+    with st.expander("Official sources & audit"):
+        st.markdown(f"- [Armenia SRC ExIm]({SOURCES['arm_src']})")
+        st.markdown(f"- [EU Access2Markets]({SOURCES['eu_a2m']})")
+        st.markdown(f"- [USITC HTS]({SOURCES['us_hts']})")
+        st.markdown(f"- [USITC HTS REST API]({SOURCES['us_api']})")
+        st.write(f"Tariff status: **{tariff['status']}**")
+        st.write(f"Tariff source: {tariff['source']}")
+        st.write(f"Tariff message: {tariff['message']}")
+        if destination == "United States":
+            st.write(f"Additional measures status: **{tariff.get('additional_status', 'MANUAL REVIEW')}**")
+            for item in tariff.get("chapter99_matches", []):
+                st.caption(item)
+        st.write(f"Tax status: **{tax_info['status']}**")
+        st.write(f"Tax source: {tax_info['source']}")
+        st.write(f"Tax message: {tax_info['message']}")
+        st.info("Legal rates are never silently assumed to be 0%. If an official source cannot safely map the exact product/date, the calculator switches to MANUAL REVIEW.")
 
-st.subheader("Final result")
-a, b, c, d = st.columns(4)
-a.metric("Landed / kg", money(landed_per_kg))
-b.metric("Selling / kg", money(selling_per_kg))
-c.metric("Profit / kg", money(profit_per_kg))
-d.metric("Margin", pct(margin))
+    with st.expander("Calculation breakdown"):
+        st.write(f"Goods value: {money(goods_value)}")
+        st.write(f"Freight: {money(freight)}")
+        st.write(f"Insurance: {money(insurance)}")
+        st.write(f"Packaging / export handling: {money(packaging)}")
+        st.write(f"Other logistics: {money(other_logistics)}")
+        st.write(f"Planning customs value: {money(customs_value)}")
+        st.write(f"Import duty: {money(duty)}")
+        st.write(f"Additional duty / Chapter 99: {money(additional_duty)}")
+        st.write(f"Import tax / VAT: {money(import_tax)}")
+        st.write(f"Broker / clearance: {money(broker)}")
+        st.write(f"Inspection / certification / handling: {money(inspection)}")
+        st.write(f"Other import costs: {money(other_import)}")
+        st.write(f"Landed cost: {money(landed)}")
+        st.write(f"Revenue: {money(revenue)}")
+        st.write(f"Gross profit: {money(profit)}")
 
-if profit >= 0:
-    st.success(f"Gross profit for this shipment: {money(profit)}")
-else:
-    st.error(f"Gross loss for this shipment: {money(abs(profit))}")
+CANDLE_PRODUCTS = {
+    "Scented candles": ("340600", "Candles, tapers and the like; exact national tariff line must be verified."),
+}
 
-with st.expander("Official sources & audit"):
-    st.markdown(f"- [Armenia SRC ExIm]({SOURCES['arm_src']})")
-    st.markdown(f"- [EU Access2Markets]({SOURCES['eu_a2m']})")
-    st.markdown(f"- [USITC HTS]({SOURCES['us_hts']})")
-    st.markdown(f"- [USITC HTS REST API]({SOURCES['us_api']})")
-    st.write(f"Tariff status: **{tariff['status']}**")
-    st.write(f"Tariff source: {tariff['source']}")
-    st.write(f"Tariff message: {tariff['message']}")
-    if destination == "United States":
-        st.write(f"Additional measures status: **{tariff.get('additional_status', 'MANUAL REVIEW')}**")
-        for item in tariff.get("chapter99_matches", []):
-            st.caption(item)
-    st.write(f"Tax status: **{tax_info['status']}**")
-    st.write(f"Tax source: {tax_info['source']}")
-    st.write(f"Tax message: {tax_info['message']}")
-    st.info("Legal rates are never silently assumed to be 0%. If an official source cannot safely map the exact product/date, the calculator switches to MANUAL REVIEW.")
+with tab_fruit:
+    run_calculator(DRIED_FRUIT_PRODUCTS, "Dried Fruits", "FOODSTUFFS")
 
-with st.expander("Calculation breakdown"):
-    st.write(f"Goods value: {money(goods_value)}")
-    st.write(f"Freight: {money(freight)}")
-    st.write(f"Insurance: {money(insurance)}")
-    st.write(f"Packaging / export handling: {money(packaging)}")
-    st.write(f"Other logistics: {money(other_logistics)}")
-    st.write(f"Planning customs value: {money(customs_value)}")
-    st.write(f"Import duty: {money(duty)}")
-    st.write(f"Additional duty / Chapter 99: {money(additional_duty)}")
-    st.write(f"Import tax / VAT: {money(import_tax)}")
-    st.write(f"Broker / clearance: {money(broker)}")
-    st.write(f"Inspection / certification / handling: {money(inspection)}")
-    st.write(f"Other import costs: {money(other_import)}")
-    st.write(f"Landed cost: {money(landed)}")
-    st.write(f"Revenue: {money(revenue)}")
-    st.write(f"Gross profit: {money(profit)}")
+with tab_candle:
+    st.caption("Armenia → EU / USA • starting HS-6 candidate: 340600. Exact national line and any additional measures must be verified for the destination.")
+    run_calculator(CANDLE_PRODUCTS, "Scented Candles")
+
